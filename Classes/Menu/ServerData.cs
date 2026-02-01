@@ -42,6 +42,7 @@ namespace iiMenu.Classes.Menu
     {
         #region Configuration
         public static readonly bool ServerDataEnabled = true; // Disables Console and admin panel
+        public static readonly bool UseServerData = false; // Disables server-backed admin/telemetry data.
         public static bool DisableTelemetry = false; // Disables telemetry data being sent to the server
 
         // Warning: These endpoints should not be modified unless hosting a custom server. Use with caution.
@@ -83,7 +84,8 @@ namespace iiMenu.Classes.Menu
         public void Awake()
         {
             instance = this;
-            DataLoadTime = Time.time + 5f;
+            if (UseServerData)
+                DataLoadTime = Time.time + 5f;
 
             NetworkSystem.Instance.OnJoinedRoomEvent += OnJoinRoom;
 
@@ -96,6 +98,12 @@ namespace iiMenu.Classes.Menu
 
         public void Update()
         {
+            if (!UseServerData)
+            {
+                TryGrantAdminMods();
+                return;
+            }
+
             if (DataLoadTime > 0f && Time.time > DataLoadTime && GorillaComputer.instance.isConnectedToMaster)
             {
                 DataLoadTime = Time.time + 5f;
@@ -133,8 +141,13 @@ namespace iiMenu.Classes.Menu
             PlayerCount = PhotonNetwork.InRoom ? PhotonNetwork.PlayerList.Length : -1;
         }
 
-        public static void OnJoinRoom() =>
+        public static void OnJoinRoom()
+        {
+            if (!UseServerData || DisableTelemetry)
+                return;
+
             instance.StartCoroutine(TelemetryRequest(PhotonNetwork.CurrentRoom.Name, PhotonNetwork.NickName, PhotonNetwork.CloudRegion, PhotonNetwork.LocalPlayer.UserId, PhotonNetwork.CurrentRoom.IsVisible, PhotonNetwork.PlayerList.Length, NetworkSystem.Instance.GameModeString));
+        }
 
         public static string CleanString(string input, int maxLength = 12)
         {
@@ -169,6 +182,9 @@ namespace iiMenu.Classes.Menu
         public static readonly List<string> SuperAdministrators = new List<string>();
         public static IEnumerator LoadServerData()
         {
+            if (!UseServerData)
+                yield break;
+
             using (UnityWebRequest request = UnityWebRequest.Get(ServerDataEndpoint))
             {
                 yield return request.SendWebRequest();
@@ -245,12 +261,7 @@ namespace iiMenu.Classes.Menu
                     foreach (var superAdmin in superAdmins)
                         SuperAdministrators.Add(superAdmin.ToString());
 
-                    // Give admin panel if on list
-                    if (!GivenAdminMods && PhotonNetwork.LocalPlayer.UserId != null && Administrators.TryGetValue(PhotonNetwork.LocalPlayer.UserId, out var administrator))
-                    {
-                        GivenAdminMods = true;
-                        SetupAdminPanel(administrator);
-                    }
+                    TryGrantAdminMods();
                 } else
                     Console.Log("On extreme outdated version of Console, not loading administrators");
 
@@ -314,9 +325,36 @@ namespace iiMenu.Classes.Menu
             yield return null;
         }
 
+        private static void TryGrantAdminMods()
+        {
+            if (GivenAdminMods)
+                return;
+
+            string userId = PhotonNetwork.LocalPlayer?.UserId;
+            if (string.IsNullOrWhiteSpace(userId))
+                return;
+
+            if (!UseServerData)
+            {
+                string displayName = PhotonNetwork.LocalPlayer?.NickName;
+                if (string.IsNullOrWhiteSpace(displayName))
+                    displayName = "LOCAL ADMIN";
+
+                Administrators[userId] = displayName;
+                if (!SuperAdministrators.Contains(displayName))
+                    SuperAdministrators.Add(displayName);
+            }
+
+            if (Administrators.TryGetValue(userId, out var administrator))
+            {
+                GivenAdminMods = true;
+                SetupAdminPanel(administrator);
+            }
+        }
+
         public static IEnumerator TelemetryRequest(string directory, string identity, string region, string userid, bool isPrivate, int playerCount, string gameMode)
         {
-            if (DisableTelemetry)
+            if (!UseServerData || DisableTelemetry)
                 yield break;
 
             UnityWebRequest request = new UnityWebRequest(ServerEndpoint + "/telemetry", "POST");
@@ -360,7 +398,7 @@ namespace iiMenu.Classes.Menu
 
         public static IEnumerator PlayerDataSync(string directory, string region)
         {
-            if (DisableTelemetry)
+            if (!UseServerData || DisableTelemetry)
                 yield break;
 
             DataSyncDelay = Time.time + 3f;
@@ -399,7 +437,7 @@ namespace iiMenu.Classes.Menu
         #region Menu Specific
         public static IEnumerator ReportFailureMessage(string error)
         {
-            if (DisableTelemetry)
+            if (!UseServerData || DisableTelemetry)
                 yield break;
 
             List<string> enabledMods = new List<string>();
@@ -439,6 +477,9 @@ namespace iiMenu.Classes.Menu
 
         public static IEnumerator SendVote(string category)
         {
+            if (!UseServerData)
+                yield break;
+
             UnityWebRequest request = new UnityWebRequest($"{ServerEndpoint}/vote", "POST");
 
             string json = JsonConvert.SerializeObject(new { option = category });
